@@ -95,8 +95,41 @@ object App {
       testDF.show(5,false)
 
       //=======================================================================================================
+      //========================================> Data Pre Processing <========================================
 
-      //=========================================> Reading Data Sets <=========================================
+      println("Join nodeDf and trainingDF for source nodes as srcDf..\n")
+      var srcDf = nodeDf.as("a").join(trainingDF.as("b"),$"a.id"===$"b.srcId").cache()
+
+      println("Renaming srcDf...\n")
+      srcDf= srcDf.drop("id")
+        .withColumnRenamed("pubYear","year_from")
+        .withColumnRenamed("title","title_from")
+        .withColumnRenamed("authors","authors_from")
+        .withColumnRenamed("jurnal","journal_from")
+        .withColumnRenamed("abstract","abstract_from")
+        .withColumnRenamed("srcId","id_from")
+
+      println("Join nodeDf and srcDf for destination nodes as dstDf...\n")
+      var dstDf = nodeDf.as("a").join(srcDf.as("b"),$"a.id"===$"b.dstId").cache()
+
+      println("Renaming dstDf...\n")
+      dstDf= dstDf.drop("id")
+        .withColumnRenamed("pubYear","year_to")
+        .withColumnRenamed("title","title_to")
+        .withColumnRenamed("authors","authors_to")
+        .withColumnRenamed("jurnal","journal_to")
+        .withColumnRenamed("abstract","abstract_to")
+        .withColumnRenamed("dstId","id_to")
+
+      println("Selecting columns from dstDf as new dataframe with name joinedDf...\n")
+      var joinedDf= dstDf.select(
+        "id_from","id_to","label","year_from","year_to",
+        "title_from","title_to","authors_from","authors_to","journal_from",
+        "journal_to","abstract_from","abstract_to"
+      )
+
+      println("Showing sample of joinedDF...\n")
+      joinedDf.show(5)
     }
   }
 }
