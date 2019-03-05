@@ -1,10 +1,12 @@
-package Supervised
+package LinkPrediction.Supervised
 
+import LinkPrediction.Utilities
+import com.rockymadden.stringmetric.similarity.JaccardMetric
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.ml.Pipeline
-import org.apache.spark.ml.feature.StopWordsRemover
+import org.apache.spark.ml.feature.{NGram, StopWordsRemover}
 import org.apache.spark.sql.{SparkSession, functions}
-import org.apache.spark.sql.functions.{col, when}
+import org.apache.spark.sql.functions.{col, udf, when}
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 
 import scala.io.StdIn.{readInt, readLine}
@@ -12,9 +14,11 @@ import scala.io.StdIn.{readInt, readLine}
 
 object App {
   def main(args: Array[String]): Unit = {
-    println("++++++++++++++++++++++++++++++\n| Supervised Link Prediction |\n++++++++++++++++++++++++++++++\n")
+    println("++++++++++++++++++++++++++++++\n| LinkPrediction.Supervised Link Prediction |\n++++++++++++++++++++++++++++++\n")
     //Show only error messages
     Logger.getLogger("org").setLevel(Level.ERROR)
+
+    println("RUNNING WITH LIMIT ON DATASET!!!")
 
     if(args.length < 3){
       println("Wrong parameters!\nApp will be terminated...")
@@ -56,7 +60,7 @@ object App {
       println("Creating nodeDF from "+nodes_csv_file_path+" file using StructType.\n")
       var nodeDf = spark.read.option("header", false).schema(schemaStruct)
         .csv(nodes_csv_file_path)
-        .repartition(numPartitions)
+        .repartition(numPartitions).limit(1000)
         .cache()
 //        .na.drop()
 
@@ -222,11 +226,27 @@ object App {
       val remover7 = new StopWordsRemover().setInputCol("abstract_from_words").setOutputCol("abstract_from_words_f")
       val remover8 = new StopWordsRemover().setInputCol("abstract_to_words").setOutputCol("abstract_to_words_f")
 
+      //N-Grams
+      //If the input is smaller than the N, no output is produced. E.g., Authors column,
+      //for a paper with 1 author, the N-Gram with N=2, will be []
+
+      val nGrams = 2
+      println("Creating N-Grams for dataframe with N=: "+nGrams)
+      val ngram1 = new NGram().setN(nGrams).setInputCol("title_from_words_f").setOutputCol("title_from_n_grams")
+      val ngram2 = new NGram().setN(nGrams).setInputCol("title_to_words_f").setOutputCol("title_to_n_grams")
+      val ngram3 = new NGram().setN(nGrams).setInputCol("authors_from_words_f").setOutputCol("authors_from_n_grams")
+      val ngram4 = new NGram().setN(nGrams).setInputCol("authors_to_words_f").setOutputCol("authors_to_n_grams")
+      val ngram5 = new NGram().setN(nGrams).setInputCol("journal_from_words_f").setOutputCol("journal_from_n_grams")
+      val ngram6 = new NGram().setN(nGrams).setInputCol("journal_to_words_f").setOutputCol("journal_to_n_grams")
+      val ngram7 = new NGram().setN(nGrams).setInputCol("abstract_from_words_f").setOutputCol("abstract_from_n_grams")
+      val ngram8 = new NGram().setN(nGrams).setInputCol("abstract_to_words_f").setOutputCol("abstract_to_n_grams")
 
       println("Setting pipeline stages...")
       val stages = Array(
         remover1,remover2,remover3,remover4,
-        remover5,remover6,remover7,remover8
+        remover5,remover6,remover7,remover8,
+        ngram1,ngram2,ngram3,ngram4,ngram5,
+        ngram6,ngram7,ngram8
       )
       val pipeline = new Pipeline()
       pipeline.setStages(stages)
@@ -234,6 +254,30 @@ object App {
       println("Transforming dataframe via pipelineModel.transform() method\n")
       val pModel = pipeline.fit(joinedDf)
       joinedDf = pModel.transform(joinedDf)
+
+      val utils = new Utilities();
+      val udf_words_overlap = udf(utils.findNumberOfCommonWords(_:Seq[String], _:Seq[String]))
+      val udf_string_jaccard_similarity=udf(JaccardMetric(1).compare(_:String, _:String))
+
+      // WORD OVERLAPING
+      println("Getting the number of common words between title_from and title_to columns using UDF function...")
+      joinedDf = joinedDf.withColumn("titles_intersection",udf_words_overlap(joinedDf("title_from_words_f"),joinedDf("title_to_words_f")))
+      println("Getting the number of common words between authors_from and authors_to columns using UDF function...")
+      joinedDf = joinedDf.withColumn("authors_intersection",udf_words_overlap(joinedDf("authors_from_words_f"),joinedDf("authors_to_words_f")))
+      println("Getting the number of common words between journal_from and journal_to columns using UDF function...")
+      joinedDf = joinedDf.withColumn("journal_intersection",udf_words_overlap(joinedDf("journal_from_words_f"),joinedDf("journal_to_words_f")))
+      println("Getting the number of common words between abstract_from and abstract_to columns using UDF function...")
+      joinedDf = joinedDf.withColumn("abstract_intersection",udf_words_overlap(joinedDf("abstract_from_words_f"),joinedDf("abstract_to_words_f")))
+
+      //JACCARD SIMILARITIES
+      println("Getting Jaccard similarity between title_from and title_to using UDF function...")
+      joinedDf = joinedDf.withColumn("titles_jaccard",udf_string_jaccard_similarity(joinedDf("title_from"),joinedDf("title_to")))
+      println("Getting Jaccard similarity between authors_from and authors_to using UDF function...")
+      joinedDf = joinedDf.withColumn("authors_jaccard",udf_string_jaccard_similarity(joinedDf("authors_from"),joinedDf("authors_to")))
+      println("Getting Jaccard similarity between journal_from and journal_to using UDF function...")
+      joinedDf = joinedDf.withColumn("journal_jaccard",udf_string_jaccard_similarity(joinedDf("journal_from"),joinedDf("journal_to")))
+      println("Getting Jaccard similarity between abstract_from and abstract_to using UDF function...")
+      joinedDf = joinedDf.withColumn("abstract_jaccard",udf_string_jaccard_similarity(joinedDf("abstract_from"),joinedDf("abstract_to")))
 
       println("Showing sample and schema of joinedDF after removing stop words from each column...")
       joinedDf.show(5)
