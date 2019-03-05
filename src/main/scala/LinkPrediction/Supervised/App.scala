@@ -5,7 +5,7 @@ import com.rockymadden.stringmetric.similarity.JaccardMetric
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.graphx.{EdgeDirection, GraphLoader}
 import org.apache.spark.ml.Pipeline
-import org.apache.spark.ml.feature.{NGram, StopWordsRemover}
+import org.apache.spark.ml.feature.{ChiSqSelector, NGram, StopWordsRemover, VectorAssembler}
 import org.apache.spark.sql.{SparkSession, functions}
 import org.apache.spark.sql.functions.{col, udf, when}
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
@@ -30,11 +30,13 @@ object App {
       val executionCores = args(0).toInt
       val numPartitions = args(1).toInt
       val model = args(2).toString
+      val trainingPercentage = args(3).toDouble
 
       //Values
       val nodes_csv_file_path = "resources/graph/nodes.csv"
       val training_set_file_path = "resources/supplementary_files/training_set.txt"
       val test_set_file_path = "resources/supplementary_files/test_set.txt"
+      val testPercentage = 1 -trainingPercentage
 
       println("App is running "+model+" with "+executionCores+" cores and "+numPartitions+" partitions.\n")
 
@@ -296,26 +298,63 @@ object App {
       //Common neighbors
       println("Calculating common neighbours for every src dst pair...")
       val udf_common_neighbours = udf(utils.findNumberOfCommonNeighbours(_:Seq[String], _:Seq[String]))
-      neighboursDF = neighboursDF.withColumn("common_neighbours",udf_common_neighbours(neighboursDF("neighbours_from"),neighboursDF("neighbours_to")))
+      neighboursDF = neighboursDF.withColumn(
+        "common_neighbours",
+        udf_common_neighbours(
+          neighboursDF("neighbours_from"),
+          neighboursDF("neighbours_to")
+        )
+      ).drop(col("label")).cache()
       neighboursDF.show(5)
 
       //Triangle counting - too costly, not so affective
-      println("Calculating triangles count for every src dst separetly...")
-      val triangles = graph.triangleCount().vertices
-      val trianglesDF = triangles.toDF("node_id","triangles_count")
+//      println("Calculating triangles count for every src dst separetly...")
+//      val triangles = graph.triangleCount().vertices
+//      val trianglesDF = triangles.toDF("node_id","triangles_count")
 
-      var newDF = neighboursDF.as("a").join(trianglesDF.as("b"),$"a.srcId" === $"b.node_id").withColumnRenamed("triangles_count","triangles_count_from")
-      newDF = newDF.as("a").join(trianglesDF.as("b"),$"a.dstId" === $"b.node_id").withColumnRenamed("triangles_count","triangles_count_to").drop("node_id")
-      newDF.show(5)
+//      var newDF = neighboursDF.as("a").join(trianglesDF.as("b"),$"a.srcId" === $"b.node_id").withColumnRenamed("triangles_count","triangles_count_from").cache()
+//      newDF = newDF.as("a").join(trianglesDF.as("b"),$"a.dstId" === $"b.node_id").withColumnRenamed("triangles_count","triangles_count_to").drop("node_id").cache()
+//      newDF.show(5)
 
       println("Adding stractural features to final df..")
-      val featuresDF = joinedDf.as("a").join(newDF.as("b"),$"a.id_from" ===$"b.srcId" && $"a.id_to" === $"b.dstId")
+      var featuresDF = joinedDf.as("a").join(neighboursDF.as("b"),$"a.id_from" ===$"b.srcId" && $"a.id_to" === $"b.dstId").cache()
 
+      println("Spiting dataset into training and test...")
+      val Array(trainingData, testData) = featuresDF.randomSplit(Array(0.7,0.3))
+      println("Data splited for training: "+trainingPercentage+" and for testing: "+testPercentage)
 
+      println("Assembling features...")
+      val assembler = new VectorAssembler()
+        .setInputCols(Array(
+        "titles_intersection","authors_intersection","journal_intersection",
+         "abstract_intersection","time_dist", "titles_jaccard","authors_jaccard",
+         "journal_jaccard","abstract_jaccard","common_neighbours"
+//         ,"triangles_count_from","triangles_count_to"
+      )).setOutputCol("features")
 
-      println("Showing sample and schema of final featuresDF")
+      featuresDF = assembler.transform(featuresDF).select(col("features"),col("label")).cache()
+      println("Showing sample of final features form...")
       featuresDF.show(5)
-      featuresDF.printSchema()
+
+      //Chi-Squared test of independence to decide which features to choose.
+
+      println("Running Chi-Squared test of independence to decide which features to choose...")
+      val selector = new ChiSqSelector()
+        .setNumTopFeatures(1)
+        .setFeaturesCol("features")
+        .setLabelCol("label")
+        .setOutputCol("selectedFeatures")
+
+      val result = selector.fit(featuresDF)
+
+      val selectedFeatures = result.selectedFeatures
+
+      val finalResult = result.transform(featuresDF)
+
+      println(s"ChiSqSelector output with top ${selector.getNumTopFeatures} features selected")
+      finalResult.show(false)
+      println("Selected Features:")
+      selectedFeatures.foreach(println)
 
     }
   }
