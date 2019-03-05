@@ -1,6 +1,7 @@
 package Supervised
 
 import org.apache.log4j.{Level, Logger}
+import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.feature.StopWordsRemover
 import org.apache.spark.sql.{SparkSession, functions}
 import org.apache.spark.sql.functions.{col, when}
@@ -211,37 +212,28 @@ object App {
 
       //Removing stop words
 
-      println("Removing stop words from title_from column...")
-      val remover = new StopWordsRemover().setInputCol("title_from_words").setOutputCol("title_from_words_f")
-      joinedDf = remover.transform(joinedDf)
-
-      println("Removing stop words from title_to column...")
+      println("Removing stop words from each column...")
+      val remover1 = new StopWordsRemover().setInputCol("title_from_words").setOutputCol("title_from_words_f")
       val remover2 = new StopWordsRemover().setInputCol("title_to_words").setOutputCol("title_to_words_f")
-      joinedDf = remover2.transform(joinedDf)
-
-      println("Removing stop words from authors_from column...")
       val remover3 = new StopWordsRemover().setInputCol("authors_from_words").setOutputCol("authors_from_words_f")
-      joinedDf = remover3.transform(joinedDf)
-
-      println("Removing stop words from authors_to column...")
       val remover4 = new StopWordsRemover().setInputCol("authors_to_words").setOutputCol("authors_to_words_f")
-      joinedDf = remover4.transform(joinedDf)
+      val remover5 = new StopWordsRemover().setInputCol("journal_from_words").setOutputCol("journal_from_words_f")
+      val remover6 = new StopWordsRemover().setInputCol("journal_to_words").setOutputCol("journal_to_words_f")
+      val remover7 = new StopWordsRemover().setInputCol("abstract_from_words").setOutputCol("abstract_from_words_f")
+      val remover8 = new StopWordsRemover().setInputCol("abstract_to_words").setOutputCol("abstract_to_words_f")
 
-      println("Removing stop words from journal_from column...")
-      val remover8 = new StopWordsRemover().setInputCol("journal_from_words").setOutputCol("journal_from_words_f")
-      joinedDf = remover8.transform(joinedDf)
 
-      println("Removing stop words from journal_to column...")
-      val remover9 = new StopWordsRemover().setInputCol("journal_to_words").setOutputCol("journal_to_words_f")
-      joinedDf = remover9.transform(joinedDf)
+      println("Setting pipeline stages...")
+      val stages = Array(
+        remover1,remover2,remover3,remover4,
+        remover5,remover6,remover7,remover8
+      )
+      val pipeline = new Pipeline()
+      pipeline.setStages(stages)
 
-      println("Removing stop words from abstract_from column...")
-      val remover5 = new StopWordsRemover().setInputCol("abstract_from_words").setOutputCol("abstract_from_words_f")
-      joinedDf = remover5.transform(joinedDf)
-
-      println("Removing stop words from abstract_to column...")
-      val remover6 = new StopWordsRemover().setInputCol("abstract_to_words").setOutputCol("abstract_to_words_f")
-      joinedDf = remover6.transform(joinedDf)
+      println("Transforming dataframe via pipelineModel.transform() method\n")
+      val pModel = pipeline.fit(joinedDf)
+      joinedDf = pModel.transform(joinedDf)
 
       println("Showing sample and schema of joinedDF after removing stop words from each column...")
       joinedDf.show(5)
