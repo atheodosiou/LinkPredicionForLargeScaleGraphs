@@ -3,6 +3,7 @@ package LinkPrediction.Supervised
 import LinkPrediction.Utilities
 import com.rockymadden.stringmetric.similarity.JaccardMetric
 import org.apache.log4j.{Level, Logger}
+import org.apache.spark.graphx.{EdgeDirection, GraphLoader}
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.feature.{NGram, StopWordsRemover}
 import org.apache.spark.sql.{SparkSession, functions}
@@ -60,7 +61,7 @@ object App {
       println("Creating nodeDF from "+nodes_csv_file_path+" file using StructType.\n")
       var nodeDf = spark.read.option("header", false).schema(schemaStruct)
         .csv(nodes_csv_file_path)
-        .repartition(numPartitions).limit(1000)
+        .repartition(numPartitions).limit(500)
         .cache()
 //        .na.drop()
 
@@ -279,9 +280,42 @@ object App {
       println("Getting Jaccard similarity between abstract_from and abstract_to using UDF function...")
       joinedDf = joinedDf.withColumn("abstract_jaccard",udf_string_jaccard_similarity(joinedDf("abstract_from"),joinedDf("abstract_to")))
 
-      println("Showing sample and schema of joinedDF after removing stop words from each column...")
-      joinedDf.show(5)
-      joinedDf.printSchema()
+      //Something from GraphX
+      println("Creating graph from training_set.txt to get structural features...")
+      val graph = GraphLoader.edgeListFile(sc,"resources/supplementary_files/training_set.txt")
+      println("Collecting neighbors for each node of the graph based on the edge list...")
+      val neighbours = graph.collectNeighbors(EdgeDirection.Either).map(x=>{
+        (x._1, x._2.map(x=>{x._1}))
+      }).toDF("node_id","neighbours")
+      println("Showing a sample of collected neighbors...\n")
+      neighbours.show(5,false)
+
+      var neighboursDF = trainingDF.as("a").join(neighbours.as("b"),$"a.srcId" === $"b.node_id").withColumnRenamed("neighbours","neighbours_from")
+      neighboursDF = neighboursDF.as("a").join(neighbours.as("b"),$"a.dstId" === $"b.node_id").drop("node_id").withColumnRenamed("neighbours","neighbours_to")
+
+      //Common neighbors
+      println("Calculating common neighbours for every src dst pair...")
+      val udf_common_neighbours = udf(utils.findNumberOfCommonNeighbours(_:Seq[String], _:Seq[String]))
+      neighboursDF = neighboursDF.withColumn("common_neighbours",udf_common_neighbours(neighboursDF("neighbours_from"),neighboursDF("neighbours_to")))
+      neighboursDF.show(5)
+
+      //Triangle counting - too costly, not so affective
+      println("Calculating triangles count for every src dst separetly...")
+      val triangles = graph.triangleCount().vertices
+      val trianglesDF = triangles.toDF("node_id","triangles_count")
+
+      var newDF = neighboursDF.as("a").join(trianglesDF.as("b"),$"a.srcId" === $"b.node_id").withColumnRenamed("triangles_count","triangles_count_from")
+      newDF = newDF.as("a").join(trianglesDF.as("b"),$"a.dstId" === $"b.node_id").withColumnRenamed("triangles_count","triangles_count_to").drop("node_id")
+      newDF.show(5)
+
+      println("Adding stractural features to final df..")
+      val featuresDF = joinedDf.as("a").join(newDF.as("b"),$"a.id_from" ===$"b.srcId" && $"a.id_to" === $"b.dstId")
+
+
+
+      println("Showing sample and schema of final featuresDF")
+      featuresDF.show(5)
+      featuresDF.printSchema()
 
     }
   }
